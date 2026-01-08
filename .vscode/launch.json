@@ -6,6 +6,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "activate",
@@ -23,6 +26,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "activate",
@@ -40,6 +46,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "amtinfo"
@@ -51,6 +60,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "deactivate",
@@ -67,6 +79,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "deactivate",
@@ -82,6 +97,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "maintenance",
@@ -98,6 +116,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "configure",
@@ -110,6 +131,9 @@
             "type": "go",
             "asRoot": true,
             "request": "launch",
+            "buildFlags": [
+                "-race"
+            ],
             "program": "${workspaceFolder}/cmd/rpc/main.go",
             "args": [
                 "version"
