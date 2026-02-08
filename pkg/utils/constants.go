@@ -30,12 +30,13 @@ const (
 	// Timeout constants
 	LMSConnectionTimeout    = 30   // seconds
 	LMSDialerTimeout        = 15   // seconds
-	HeciReadTimeout         = 10   // seconds
+	HeciReadTimeout         = 30   // seconds
 	HeciRetryDelay          = 3000 // milliseconds
 	HeciReinitDelay         = 500  // milliseconds
 	HeciConnectRetryBackoff = 500  // milliseconds
-	LMETimerTimeout         = 2    // seconds
-	WebSocketTimeout        = 30   // seconds
+	LMETimerTimeout         = 10   // seconds
+	WebSocketTimeout        = 60   // seconds
+	AMTResponseTimeout      = 30   // seconds
 
 	HelpHeader = "\nRemote Provisioning Client (RPC) - used for activation, deactivation, maintenance and status of AMT\n\n"
 

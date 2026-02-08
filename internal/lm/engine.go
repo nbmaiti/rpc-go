@@ -69,6 +69,20 @@ func (lme *LMEConnection) Initialize() error {
 func (lme *LMEConnection) Connect() error {
 	log.Debug("Sending APF_CHANNEL_OPEN")
 
+	// Issue #7 fix: Reset session state before new connection
+	if lme.Session.Timer != nil {
+		lme.Session.Timer.Stop()
+		// Reset the existing timer instead of creating a new one
+		// (timer goroutine is waiting on this timer's channel)
+		lme.Session.Timer.Reset(utils.LMETimerTimeout * time.Second)
+	} else {
+		// First time only - create the timer
+		lme.Session.Timer = time.NewTimer(utils.LMETimerTimeout * time.Second)
+	}
+	lme.Session.Tempdata = []byte{}
+	lme.Session.SenderChannel = 0
+	lme.Session.TXWindow = 0
+
 	var lastErr error
 
 	for attempts := 0; attempts < 4; attempts++ {
@@ -91,7 +105,8 @@ func (lme *LMEConnection) Connect() error {
 				if initErr := lme.Initialize(); initErr != nil {
 					return initErr
 				}
-
+				// Issue #1 fix: Add delay after Initialize to give device time to stabilize
+				time.Sleep(utils.HeciRetryDelay * time.Millisecond)
 				continue
 			}
 
@@ -158,28 +173,52 @@ func (lme *LMEConnection) execute(bin_buf bytes.Buffer) error {
 
 // Listen reads data from the LMS socket connection
 func (lme *LMEConnection) Listen() {
+	timerDone := make(chan struct{})
+	defer close(timerDone)
+
+	// Timer goroutine - handles timer expirations for ALL channels
 	go func() {
-		lme.Session.Timer = time.NewTimer(utils.LMETimerTimeout * time.Second)
-		<-lme.Session.Timer.C
+		for {
+			select {
+			case <-lme.Session.Timer.C:
+				// Timer fired - send accumulated data
+				select {
+				case lme.Session.DataBuffer <- lme.Session.Tempdata:
+				case <-timerDone:
+					return
+				}
 
-		lme.Session.DataBuffer <- lme.Session.Tempdata
+				lme.Session.Tempdata = []byte{}
 
-		lme.Session.Tempdata = []byte{}
+				var bin_buf bytes.Buffer
 
-		var bin_buf bytes.Buffer
+				channelData := apf.ChannelClose(lme.Session.SenderChannel)
+				binary.Write(&bin_buf, binary.BigEndian, channelData.MessageType)
+				binary.Write(&bin_buf, binary.BigEndian, channelData.RecipientChannel)
 
-		channelData := apf.ChannelClose(lme.Session.SenderChannel)
-		binary.Write(&bin_buf, binary.BigEndian, channelData.MessageType)
-		binary.Write(&bin_buf, binary.BigEndian, channelData.RecipientChannel)
-
-		lme.Command.Send(bin_buf.Bytes())
+				lme.Command.Send(bin_buf.Bytes())
+			case <-timerDone:
+				if lme.Session.Timer != nil {
+					lme.Session.Timer.Stop()
+				}
+				return
+			}
+		}
 	}()
 
 	for {
 		result2, bytesRead, err2 := lme.Command.Receive()
 		if bytesRead == 0 || err2 != nil {
 			log.Trace("NO MORE DATA TO READ")
-
+			// Issue #3 fix: Send error to channel before exiting to prevent deadlock
+			// But don't panic if channel is closed
+			if err2 != nil {
+				select {
+				case lme.Session.ErrorBuffer <- err2:
+				default:
+					log.Debug("Error channel closed, exiting Listen")
+				}
+			}
 			break
 		} else {
 			result := apf.Process(result2, lme.Session)

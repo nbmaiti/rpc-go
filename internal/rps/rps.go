@@ -46,9 +46,7 @@ func ExecuteCommand(req *Request) error {
 		return err
 	}
 
-	executor.MakeItSo(startMessage)
-
-	return nil
+	return executor.MakeItSo(startMessage)
 }
 
 func setCommandMethod(flags *Request) {
