@@ -119,7 +119,7 @@ func (heci *Driver) GetBufferSize() uint32 {
 }
 
 func (heci *Driver) SendMessage(buffer []byte, done *uint32) (bytesWritten int, err error) {
-	log.Tracef("heci send len=%d", len(buffer))
+	//log.Tracef("heci send len=%d", len(buffer))
 
 	// Issue #6 fix: Protect device handle access with read lock
 	heci.mu.RLock()
@@ -208,7 +208,7 @@ func (driver *Driver) ReceiveMessage(buffer []byte, done *uint32) (bytesRead int
 		}
 
 		if pfd[0].Revents&unix.POLLIN != 0 {
-			log.Tracef("heci poll revents=0x%x", pfd[0].Revents)
+			//log.Tracef("heci poll revents=0x%x", pfd[0].Revents)
 
 			read, readErr := unix.Read(fd, buffer)
 			if readErr == unix.EINTR {
