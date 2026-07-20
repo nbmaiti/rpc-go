@@ -8,8 +8,20 @@
 # (sigstore/cosign-installer). For each artifact this emits a detached
 # signature (.sig), the signing certificate (.pem) and a Sigstore bundle
 # (.cosign.bundle.json) that pairs the two for offline `cosign verify-blob`.
+#
+# After signing, each artifact is verified with `cosign verify-blob` (as the
+# orch-ci action does) so a bad signature fails the release instead of
+# shipping. The verified identity is this repo's release workflow via the
+# GitHub Actions OIDC issuer. Set COSIGN_SKIP_VERIFY=1 to skip verification
+# (e.g. local key-based testing, where there is no Fulcio identity to match).
 
 set -euo pipefail
+
+# Keyless verification identity. GITHUB_REPOSITORY is set by GitHub Actions;
+# fall back to the canonical repo for local runs.
+repo="${GITHUB_REPOSITORY:-device-management-toolkit/rpc-go}"
+cert_identity_regexp="https://github.com/${repo}/.github/workflows/.*.yml@.*"
+oidc_issuer="https://token.actions.githubusercontent.com"
 
 # The release artifacts produced by build.sh (see .releaserc.json assets).
 artifacts=(
@@ -38,6 +50,19 @@ for artifact in "${artifacts[@]}"; do
         "$artifact"
 
     echo "✅ Signed $artifact"
+
+    if [ "${COSIGN_SKIP_VERIFY:-0}" = "1" ]; then
+        echo "⏭️  Skipping verification (COSIGN_SKIP_VERIFY=1) for $artifact"
+        continue
+    fi
+
+    echo "🧾 Verifying $artifact"
+    cosign verify-blob \
+        --bundle "${artifact}.cosign.bundle.json" \
+        --certificate-identity-regexp "$cert_identity_regexp" \
+        --certificate-oidc-issuer "$oidc_issuer" \
+        "$artifact"
+    echo "🟢 Verified $artifact"
 done
 
 echo "Cosign artifacts:"
