@@ -1,12 +1,6 @@
 {
   "branches": [
-    {
-      "name": "2.x.x",
-      "range": "2.x",
-      "channel": "2.x"
-    },
-    "release",
-    { "name": "main", "channel": "beta", "prerelease": "beta" }
+    { "name": "test-release", "channel": "beta", "prerelease": "beta" }
   ],
   "plugins": [
     [
@@ -68,11 +62,9 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "./build.sh ${nextRelease.version} && ./sign.sh && docker build -t vprodemo.azurecr.io/rpc-go:v${nextRelease.version} -t vprodemo.azurecr.io/rpc-go:latest -t docker.io/intel/oact-rpc-go:v${nextRelease.version} -t docker.io/intel/oact-rpc-go:latest -t docker.io/intel/device-mgmt-toolkit-rpc-go:v${nextRelease.version} -t docker.io/intel/device-mgmt-toolkit-rpc-go:latest .",
-        "publishCmd": "docker push vprodemo.azurecr.io/rpc-go:v${nextRelease.version} && docker push vprodemo.azurecr.io/rpc-go:latest && docker push docker.io/intel/oact-rpc-go:v${nextRelease.version} && docker push docker.io/intel/oact-rpc-go:latest && docker push docker.io/intel/device-mgmt-toolkit-rpc-go:v${nextRelease.version} && docker push docker.io/intel/device-mgmt-toolkit-rpc-go:latest",
+        "prepareCmd": "./build.sh ${nextRelease.version} && ./sign.sh",
         "verifyReleaseCmd": "echo v${nextRelease.version} > .nextVersion"
       }
-    ],
-    "@semantic-release/git"
+    ]
   ]
 }
