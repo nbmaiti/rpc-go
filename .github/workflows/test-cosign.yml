@@ -9,7 +9,7 @@ name: TEST Cosign Signing (fork only)
 
 on:
   push:
-    branches: [ cosign_bin ]
+    branches: [ cosign_bin, authenticode-signing ]
   workflow_dispatch:
 
 permissions:
@@ -44,6 +44,11 @@ jobs:
 
       - name: Build release binaries
         run: ./build.sh 0.0.0-test
+
+      # Runs before Cosign (matches release order). No Azure cert on the fork,
+      # so sign-windows.sh no-ops (exit 0) — this just proves the wiring works.
+      - name: Authenticode-sign Windows binaries
+        run: ./sign-windows.sh
 
       - name: Sign binaries with Cosign
         run: ./sign.sh
