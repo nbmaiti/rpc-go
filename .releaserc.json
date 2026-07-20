@@ -1,6 +1,6 @@
 {
   "branches": [
-    { "name": "test-release", "channel": "beta", "prerelease": "beta" }
+    "test-release"
   ],
   "plugins": [
     [
