@@ -77,6 +77,14 @@ jobs:
   sign-windows:
     needs: build
     runs-on: windows-latest
+    # Hoisted to job level so the `if:` below can test it: the env context is
+    # reliably available in a step `if:`, the secrets context is not. Named
+    # REAL_* rather than WINDOWS_* so it cannot collide with the WINDOWS_*
+    # values the generate step writes via GITHUB_ENV — a name set in an `env:`
+    # map would otherwise shadow the GITHUB_ENV one.
+    env:
+      REAL_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+      REAL_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -88,22 +96,74 @@ jobs:
         with:
           name: poc-artifacts-unsigned
 
+      # No real certificate on the fork, so mint a throwaway self-signed one and
+      # feed it in through the same env vars a real secret would use. This makes
+      # the POC actually execute signtool.exe instead of taking the skip branch —
+      # without it the run proves nothing about the signing path.
+      #
+      # The resulting signature is UNTRUSTED (the cert chains to nothing) and
+      # does nothing for SmartScreen. It only proves the mechanics: signtool is
+      # found, the .pfx round-trips through base64, the PE bytes change, and
+      # Cosign signs the post-Authenticode bytes.
+      #
+      # Skipped when a real WINDOWS_PFX_BASE64 secret exists, so adding the
+      # secret later switches this to the genuine cert with no edit here.
+      - name: Generate throwaway self-signed cert (POC only)
+        if: ${{ env.REAL_PFX_BASE64 == '' }}
+        shell: pwsh
+        run: |
+          $pw = 'poc-' + [guid]::NewGuid().ToString('N')
+          # -Type CodeSigningCert already sets the code-signing EKU and
+          # DigitalSignature key usage; don't restate them and risk a parameter
+          # conflict. -KeyExportPolicy Exportable is required by Export-PfxCertificate.
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject 'CN=rpc-go POC Signing (UNTRUSTED, DO NOT SHIP)' `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -KeyExportPolicy Exportable `
+            -NotAfter (Get-Date).AddDays(1)
+          $pfx = Join-Path $env:RUNNER_TEMP 'poc-selfsigned.pfx'
+          $null = Export-PfxCertificate -Cert $cert -FilePath $pfx `
+            -Password (ConvertTo-SecureString -String $pw -Force -AsPlainText)
+          $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfx))
+          Remove-Item $pfx -Force
+          Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force
+          # ::add-mask:: keeps the throwaway key and password out of the log.
+          Write-Host "::add-mask::$b64"
+          Write-Host "::add-mask::$pw"
+          "WINDOWS_PFX_BASE64=$b64" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_PFX_PASSWORD=$pw" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Generated throwaway self-signed code-signing cert."
+
+      # A self-signed cert has no trusted RFC3161 timestamp authority problem —
+      # public timestamp servers happily timestamp anything — so the real
+      # timestamp URL is still exercised.
       - name: Authenticode-sign Windows binaries
         shell: pwsh
         env:
-          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
-          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          # A real secret wins; otherwise fall back to the throwaway cert the
+          # step above exported into GITHUB_ENV as WINDOWS_PFX_BASE64.
+          WINDOWS_PFX_BASE64: ${{ env.REAL_PFX_BASE64 || env.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ env.REAL_PFX_PASSWORD || env.WINDOWS_PFX_PASSWORD }}
         run: ./sign-windows.ps1
 
-      # Report whether a signature is actually present, without failing the run
-      # when it is not — an unsigned pass-through is the expected fork default.
-      - name: Report signature state
+      # Assert a signature is actually embedded. Status will be NotTrusted or
+      # UnknownError for the self-signed POC cert — that is expected and fine.
+      # NotSigned is the real failure: it means signtool silently did nothing.
+      - name: Verify a signature is embedded
         shell: pwsh
         run: |
+          $failed = $false
           foreach ($f in 'rpc_windows_x64.exe', 'rpc_windows_x86.exe') {
             $sig = Get-AuthenticodeSignature $f
-            Write-Host "$f -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+            Write-Host "$f -> $($sig.Status) | $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -eq 'NotSigned') {
+              Write-Host "::error::$f has no Authenticode signature"
+              $failed = $true
+            }
           }
+          if ($failed) { exit 1 }
+          Write-Host 'Both executables carry an Authenticode signature.'
 
       - name: Upload signed Windows executables
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -149,11 +209,14 @@ jobs:
           cat unsigned-exe-digests.txt
           echo "--- digests of the files Cosign is about to sign ---"
           sha256sum rpc_windows_x64.exe rpc_windows_x86.exe
+          # The sign job always signs (real cert or throwaway self-signed), so
+          # unchanged bytes mean the signature never landed. Fail loudly —
+          # silently passing here is how the Cosign ordering bug hides.
           if sha256sum -c --status unsigned-exe-digests.txt 2>/dev/null; then
-            echo "ℹ️  .exe bytes unchanged — Authenticode signing was skipped (no pfx secret)."
-          else
-            echo "✅ .exe bytes changed — Authenticode signature is embedded."
+            echo "::error::.exe bytes unchanged — Authenticode signing did not happen."
+            exit 1
           fi
+          echo "✅ .exe bytes changed — Cosign will sign the post-Authenticode bytes."
 
       - name: Sign binaries with Cosign
         run: ./sign.sh
