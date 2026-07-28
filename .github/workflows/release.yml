@@ -4,6 +4,22 @@
 #*********************************************************************/
 
 # This workflow will release new versions when required using semantic-release
+#
+# The release is split across four jobs because Authenticode signing needs
+# signtool.exe, which only exists on Windows, while semantic-release runs on
+# Linux:
+#
+#   version         resolve the next version via semantic-release --dry-run
+#     -> build      build.sh on ubuntu-latest, upload artifacts
+#       -> sign-windows   signtool.exe on windows-latest, re-upload signed .exe
+#         -> release      download everything, Cosign, publish
+#
+# Cosign runs last (in release) so it signs the final Authenticode-signed bytes.
+# Reversing that order breaks `cosign verify-blob` against the shipped binary.
+#
+# The `version` dry run exists only so `build` knows what to stamp into the
+# binaries. semantic-release in the `release` job recomputes the same version
+# from the same commits and is still the authority on whether to publish at all.
 
 name: Semantic-Release CI
 
@@ -15,7 +31,131 @@ permissions:
   contents: read
 
 jobs:
+  # Resolve the next version without publishing, so the build job can stamp it
+  # into the binaries. Skips the whole pipeline when there is nothing to release.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      new-release-published: ${{ steps.semantic.outputs.new_release_published }}
+      new-release-version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # extra_plugins must match the release job: .releaserc.json references
+      # @semantic-release/exec, and semantic-release fails to load its config if
+      # the plugin is not installed — even on a dry run. Dry run skips the
+      # prepare and publish steps, so release-prepare.sh does not execute here.
+      - name: Resolve next version (dry run)
+        id: semantic
+        uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
+        with:
+          semantic_version: 19.0.5
+          dry_run: true
+          extra_plugins: |
+            @semantic-release/exec@6.0.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.ROSIE_TOKEN }}
+
+  build:
+    needs: version
+    if: ${{ needs.version.outputs.new-release-published == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v5.3.0
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install go-licenses
+        run: |
+          go install github.com/google/go-licenses@v1.0.0
+          echo "PATH=$PATH:$(go env GOPATH)/bin" >> $GITHUB_ENV
+
+      # Version goes through env, not direct ${{ }} interpolation into the run
+      # block, so it cannot expand into shell code (zizmor template-injection).
+      - name: Build release binaries
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.new-release-version }}
+        run: ./build.sh "$RELEASE_VERSION"
+
+      # rpc.so.<version> has a version-dependent name, so glob it rather than
+      # naming it. if-no-files-found: error catches a build.sh that half-failed.
+      - name: Upload unsigned artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpc-artifacts-unsigned
+          path: |
+            rpc_linux_x64.tar.gz
+            rpc_linux_x86.tar.gz
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+            rpc_so_x64.tar.gz
+            licenses.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # Authenticode signing. signtool.exe is Windows-only, hence windows-latest.
+  # sign-windows.ps1 no-ops (exit 0) when WINDOWS_PFX_BASE64 is absent, e.g. on
+  # forks, so the .exe files pass through unsigned and the release still works.
+  sign-windows:
+    needs: [version, build]
+    runs-on: windows-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rpc-artifacts-unsigned
+
+      - name: Authenticode-sign Windows binaries
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: ./sign-windows.ps1
+
+      # Only the .exe files change here; the release job takes the rest from the
+      # unsigned artifact. Keeping them in a separate artifact makes it obvious
+      # which files this job is authoritative for.
+      - name: Upload signed Windows executables
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpc-artifacts-windows-signed
+          path: |
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+          if-no-files-found: error
+          retention-days: 1
+
   release:
+    needs: [version, build, sign-windows]
     permissions:
       contents: write # for Git to git push
       id-token: write # for Cosign keyless signing (Fulcio/OIDC)
@@ -46,37 +186,33 @@ jobs:
           username: ${{ secrets.INTC_DOCKER_USERNAME }}
           password: ${{ secrets.INTC_DOCKER_PASSWORD }}
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v5.3.0
-        with:
-          go-version: 'stable'
-          check-latest: true
-      - name: Install go-licenses
-        run: |
-          go install github.com/google/go-licenses@v1.0.0
-          echo "PATH=$PATH:$(go env GOPATH)/bin" >> $GITHUB_ENV
+      # No Go toolchain here on purpose: this job does not compile anything.
+      # The binaries and licenses.zip come from the build job's artifact, and
+      # the container image is built by the golang image in the Dockerfile.
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
         with:
           cosign-release: 'v3.0.2'
 
-      # Authenticode signing of the Windows executables via Azure Trusted
-      # Signing. Skipped automatically (sign-windows.sh no-ops) when the
-      # AZURE_TS_* secrets are absent, e.g. on forks.
-      - name: Install sign tool (Authenticode)
-        if: ${{ vars.AZURE_TS_ENDPOINT != '' }}
-        run: |
-          dotnet tool install --global sign --version 0.9.1-beta.24469.1
-          echo "PATH=$PATH:$HOME/.dotnet/tools" >> "$GITHUB_ENV"
-
-      - name: Azure login for Trusted Signing
-        if: ${{ vars.AZURE_TS_ENDPOINT != '' }}
-        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          name: rpc-artifacts-unsigned
 
+      # Overwrites the two unsigned .exe files with the Authenticode-signed
+      # ones. Must come after the unsigned download, not before.
+      - name: Download signed Windows executables
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: rpc-artifacts-windows-signed
+
+      # The Linux binaries are inside .tar.gz files, which preserve their mode
+      # bits, so nothing needs chmod here. The Docker image is built from source
+      # by release-prepare.sh, not from these artifacts.
+
+      # RPC_ARTIFACTS_PREBUILT stops release-prepare.sh from rebuilding, which
+      # would overwrite the signed .exe files with freshly built unsigned ones.
       - name: Semantic Release
         uses: cycjimmy/semantic-release-action@b12c8f6015dc215fe37bc154d4ad456dd3833c90 # v6.0.0
         with:
@@ -87,6 +223,4 @@ jobs:
             @semantic-release/exec@6.0.3
         env:
           GITHUB_TOKEN: ${{ secrets.ROSIE_TOKEN }}
-          AZURE_TS_ENDPOINT: ${{ vars.AZURE_TS_ENDPOINT }}
-          AZURE_TS_ACCOUNT: ${{ vars.AZURE_TS_ACCOUNT }}
-          AZURE_TS_CERT_PROFILE: ${{ vars.AZURE_TS_CERT_PROFILE }}
+          RPC_ARTIFACTS_PREBUILT: '1'

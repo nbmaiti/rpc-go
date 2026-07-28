@@ -1,0 +1,193 @@
+# THROWAWAY POC workflow for validating the split release pipeline on a fork.
+# DELETE THIS FILE before opening the upstream PR — it is not part of the release.
+#
+# Mirrors the real job graph in release.yml:
+#
+#   build -> sign-windows (signtool.exe on windows-latest) -> cosign+verify
+#
+# but with a fixed version, no semantic-release, no Docker, and no publish, so it
+# is safe to push repeatedly to a fork (github.com/nbmaiti/rpc-go).
+#
+# What it proves:
+#   1. Artifacts survive the upload/download round trip between runners.
+#   2. sign-windows.ps1 finds signtool.exe and either signs or cleanly no-ops
+#      (no-ops here unless you add the WINDOWS_PFX_* secrets to the fork).
+#   3. Cosign signs the post-Authenticode bytes and verify-blob passes against
+#      the exact files that would ship — the ordering bug this pipeline exists
+#      to avoid.
+#
+# Add WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD as fork secrets to exercise the
+# real signing path; without them the sign step logs a skip and passes through.
+
+name: TEST Release POC (fork only)
+
+on:
+  push:
+    branches: [ cosign_bin, authenticode-signing, release-poc ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  POC_VERSION: 0.0.0-poc
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v5.3.0
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install go-licenses
+        run: |
+          go install github.com/google/go-licenses@v1.0.0
+          echo "PATH=$PATH:$(go env GOPATH)/bin" >> $GITHUB_ENV
+
+      - name: Build release binaries
+        run: ./build.sh "$POC_VERSION"
+
+      # Record the pre-signing digests so the verify job can prove the .exe
+      # bytes actually changed (or deliberately did not) after Authenticode.
+      - name: Record unsigned digests
+        run: sha256sum rpc_windows_x64.exe rpc_windows_x86.exe | tee unsigned-exe-digests.txt
+
+      - name: Upload unsigned artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: poc-artifacts-unsigned
+          path: |
+            rpc_linux_x64.tar.gz
+            rpc_linux_x86.tar.gz
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+            rpc_so_x64.tar.gz
+            licenses.zip
+            unsigned-exe-digests.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-windows:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: poc-artifacts-unsigned
+
+      - name: Authenticode-sign Windows binaries
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: ./sign-windows.ps1
+
+      # Report whether a signature is actually present, without failing the run
+      # when it is not — an unsigned pass-through is the expected fork default.
+      - name: Report signature state
+        shell: pwsh
+        run: |
+          foreach ($f in 'rpc_windows_x64.exe', 'rpc_windows_x86.exe') {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Upload signed Windows executables
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: poc-artifacts-windows-signed
+          path: |
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  cosign:
+    needs: [build, sign-windows]
+    permissions:
+      contents: read
+      id-token: write # for Cosign keyless signing (Fulcio/OIDC)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        with:
+          cosign-release: 'v3.0.2'
+
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: poc-artifacts-unsigned
+
+      - name: Download signed Windows executables
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: poc-artifacts-windows-signed
+
+      - name: Compare digests before and after Authenticode
+        run: |
+          set -euo pipefail
+          echo "--- digests recorded before signing ---"
+          cat unsigned-exe-digests.txt
+          echo "--- digests of the files Cosign is about to sign ---"
+          sha256sum rpc_windows_x64.exe rpc_windows_x86.exe
+          if sha256sum -c --status unsigned-exe-digests.txt 2>/dev/null; then
+            echo "ℹ️  .exe bytes unchanged — Authenticode signing was skipped (no pfx secret)."
+          else
+            echo "✅ .exe bytes changed — Authenticode signature is embedded."
+          fi
+
+      - name: Sign binaries with Cosign
+        run: ./sign.sh
+
+      - name: Verify signatures (keyless)
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Keyless identity is this workflow file on this fork/branch.
+          CERT_IDENTITY="https://github.com/${GH_REPO}/.github/workflows/test-release-poc.yml@refs/heads/.*"
+          OIDC_ISSUER="https://token.actions.githubusercontent.com"
+          for artifact in rpc_linux_x64.tar.gz rpc_linux_x86.tar.gz rpc_windows_x64.exe rpc_windows_x86.exe rpc_so_x64.tar.gz; do
+            echo "🧾 Verifying $artifact"
+            cosign verify-blob \
+              --bundle "${artifact}.cosign.bundle.json" \
+              --certificate-identity-regexp "$CERT_IDENTITY" \
+              --certificate-oidc-issuer "$OIDC_ISSUER" \
+              "$artifact"
+          done
+          echo "🟢 All signatures verified against the post-Authenticode bytes."
+
+      - name: Upload release candidate for inspection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: poc-release-candidate
+          path: |
+            rpc_linux_x64.tar.gz
+            rpc_linux_x86.tar.gz
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+            rpc_so_x64.tar.gz
+            licenses.zip
+            *.sig
+            *.pem
+            *.cosign.bundle.json
+          if-no-files-found: error
