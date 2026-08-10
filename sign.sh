@@ -19,7 +19,7 @@ set -euo pipefail
 # Keyless verification identity. GITHUB_REPOSITORY is set by GitHub Actions;
 # fall back to the canonical repo for local runs.
 repo="${GITHUB_REPOSITORY:-device-management-toolkit/rpc-go}"
-cert_identity_regexp="^https://github.com/${repo}/.github/workflows/release\\.yml@refs/(heads|tags)/.*$"
+cert_identity_regexp="${COSIGN_CERT_IDENTITY_REGEXP:-^https://github.com/${repo}/.github/workflows/release\\.yml@refs/(heads|tags)/.*$}"
 oidc_issuer="https://token.actions.githubusercontent.com"
 
 # The release artifacts produced by build.sh (see .releaserc.json assets).

@@ -1,0 +1,97 @@
+# THROWAWAY test workflow for validating cosign + Authenticode signing on a fork.
+# DELETE THIS FILE before opening the upstream PR - it is not part of the release.
+
+name: TEST Cosign + Authenticode Signing (fork only)
+
+on:
+  push:
+    branches: [ test/authenticode-signing ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-sign:
+    permissions:
+      contents: write
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v5.3.0
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install go-licenses
+        run: |
+          go install github.com/google/go-licenses@v1.0.0
+          echo "PATH=$PATH:$(go env GOPATH)/bin" >> $GITHUB_ENV
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        with:
+          cosign-release: 'v3.0.2'
+
+      - name: Build release binaries
+        run: ./build.sh 0.0.0-test
+
+      - name: Authenticode-sign Windows binaries
+        run: ./sign-windows.sh
+
+      - name: Sign binaries with Cosign
+        run: COSIGN_CERT_IDENTITY_REGEXP='^https://github.com/${{ github.repository }}/.github/workflows/test-cosign\.yml@refs/heads/.*$' ./sign.sh
+
+      - name: Verify signatures (keyless)
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          CERT_IDENTITY="https://github.com/${GH_REPO}/.github/workflows/test-cosign.yml@refs/heads/.*"
+          OIDC_ISSUER="https://token.actions.githubusercontent.com"
+          for artifact in rpc_linux_x64.tar.gz rpc_linux_x86.tar.gz rpc_windows_x64.exe rpc_windows_x86.exe rpc_so_x64.tar.gz; do
+            echo "Verifying $artifact"
+            cosign verify-blob \
+                --bundle "${artifact}.sigstore.json" \
+              --certificate-identity-regexp "$CERT_IDENTITY" \
+              --certificate-oidc-issuer "$OIDC_ISSUER" \
+              "$artifact"
+          done
+
+      - name: Upload signatures for inspection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cosign-signatures
+          path: |
+            *.sigstore.json
+          if-no-files-found: error
+
+      - name: Upload built binaries for inspection
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rpc-binaries
+          path: |
+            rpc_linux_x64.tar.gz
+            rpc_linux_x86.tar.gz
+            rpc_windows_x64.exe
+            rpc_windows_x86.exe
+            rpc_so_x64.tar.gz
+          if-no-files-found: error
+
+      - name: Create draft pre-release with signed artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="test-authenticode-sign-$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$TAG" \
+            --draft \
+            --prerelease \
+            --title "[TEST] Authenticode + Cosign signing $TAG" \
+            --notes "Throwaway draft release for authenticode + cosign workflow validation. Delete after inspection." \
+            rpc_linux_x64.tar.gz rpc_linux_x86.tar.gz rpc_windows_x64.exe rpc_windows_x86.exe rpc_so_x64.tar.gz \
+              *.sigstore.json
