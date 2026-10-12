@@ -1,12 +1,12 @@
 {
   "branches": [
     {
-      "name": "2.x.x",
-      "range": "2.x",
-      "channel": "2.x"
+      "name": "main"
     },
-    "release",
-    { "name": "main", "channel": "beta", "prerelease": "beta" }
+    {
+      "name": "beta",
+      "prerelease": "beta"
+    }
   ],
   "plugins": [
     [
@@ -27,32 +27,72 @@
       {
         "assets": [
           {
-            "path": "rpc_linux_x64.tar.gz",
-            "label": "Linux x64 RPC Executable"
+            "path": "console_linux_x64.tar.gz",
+            "label": "Linux x64 Console (Full)"
           },
           {
-            "path": "rpc_linux_x86.tar.gz",
-            "label": "Linux x86 RPC Executable"
+            "path": "console_linux_x64_headless.tar.gz",
+            "label": "Linux x64 Console Headless (No UI)"
           },
           {
-            "path": "rpc_windows_x64.exe",
-            "label": "Windows x64 RPC Executable"
+            "path": "console_linux_arm64.tar.gz",
+            "label": "Linux ARM64 Console (Full)"
           },
           {
-            "path": "rpc_windows_x86.exe",
-            "label": "Windows x86 RPC Executable"
+            "path": "console_linux_arm64_headless.tar.gz",
+            "label": "Linux ARM64 Console Headless (No UI)"
           },
           {
-            "path": "rpc_so_x64.tar.gz",
-            "label": "Linux x64 RPC Library"
+            "path": "dist/windows/console_windows_x64.exe",
+            "label": "Windows x64 Console (Full)"
+          },
+          {
+            "path": "dist/windows/console_windows_x64_headless.exe",
+            "label": "Windows x64 Console Headless (No UI)"
+          },
+          {
+            "path": "console_mac_arm64.tar.gz",
+            "label": "macOS ARM64 Console (Full)"
+          },
+          {
+            "path": "console_mac_arm64_headless.tar.gz",
+            "label": "macOS ARM64 Console Headless (No UI)"
           },
           {
             "path": "licenses.zip",
-            "label": "Third-party Licenses"
+            "label": "Third-Party Licenses"
           },
           {
-              "path": "*.sigstore.json",
-              "label": "Cosign Signature Bundles"
+            "path": "console_linux_x64.tar.gz.cosign.bundle.json",
+            "label": "Linux x64 Console Signature Bundle"
+          },
+          {
+            "path": "console_linux_x64_headless.tar.gz.cosign.bundle.json",
+            "label": "Linux x64 Headless Console Signature Bundle"
+          },
+          {
+            "path": "console_linux_arm64.tar.gz.cosign.bundle.json",
+            "label": "Linux ARM64 Console Signature Bundle"
+          },
+          {
+            "path": "console_linux_arm64_headless.tar.gz.cosign.bundle.json",
+            "label": "Linux ARM64 Headless Console Signature Bundle"
+          },
+          {
+            "path": "dist%2Fwindows%2Fconsole_windows_x64.exe.cosign.bundle.json",
+            "label": "Windows x64 Console Signature Bundle"
+          },
+          {
+            "path": "dist%2Fwindows%2Fconsole_windows_x64_headless.exe.cosign.bundle.json",
+            "label": "Windows x64 Headless Console Signature Bundle"
+          },
+          {
+            "path": "console_mac_arm64.tar.gz.cosign.bundle.json",
+            "label": "macOS ARM64 Console Signature Bundle"
+          },
+          {
+            "path": "console_mac_arm64_headless.tar.gz.cosign.bundle.json",
+            "label": "macOS ARM64 Headless Console Signature Bundle"
           }
         ]
       }
@@ -60,11 +100,10 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "./build.sh ${nextRelease.version} && bash ./sign.sh && docker build -t vprodemo.azurecr.io/rpc-go:v${nextRelease.version} -t vprodemo.azurecr.io/rpc-go:latest -t docker.io/intel/oact-rpc-go:v${nextRelease.version} -t docker.io/intel/oact-rpc-go:latest -t docker.io/intel/device-mgmt-toolkit-rpc-go:v${nextRelease.version} -t docker.io/intel/device-mgmt-toolkit-rpc-go:latest .",
-        "publishCmd": "docker push vprodemo.azurecr.io/rpc-go:v${nextRelease.version} && docker push vprodemo.azurecr.io/rpc-go:latest && docker push docker.io/intel/oact-rpc-go:v${nextRelease.version} && docker push docker.io/intel/oact-rpc-go:latest && docker push docker.io/intel/device-mgmt-toolkit-rpc-go:v${nextRelease.version} && docker push docker.io/intel/device-mgmt-toolkit-rpc-go:latest",
-        "verifyReleaseCmd": "echo v${nextRelease.version} > .nextVersion"
+        "prepareCmd": "./build.sh ${nextRelease.version} && bash ./sign.sh",
+        "publishCmd": "docker push vprodemo.azurecr.io/console:v${nextRelease.version} && docker push vprodemo.azurecr.io/console:latest && docker push vprodemo.azurecr.io/console:v${nextRelease.version}-headless && docker push vprodemo.azurecr.io/console:latest-headless",
+        "verifyReleaseCmd": "echo v${nextRelease.version} > .VERSION"
       }
-    ],
-    "@semantic-release/git"
+    ]
   ]
 }
