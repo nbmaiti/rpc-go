@@ -1,74 +1,93 @@
 #!/bin/bash
 
-# Sign release artifacts with Cosign keyless (Fulcio/OIDC) signing.
-# The calling CI workflow must grant `id-token: write` and install cosign.
-# For each artifact this emits a path-qualified Cosign bundle in the repository
-# root, plus a basename alias for legacy verification when aliases are unique.
+# Sign the release binaries with Cosign using keyless (Fulcio/OIDC) signing.
+#
+# Reference: orch-ci .github/actions/security/cosign (sigstore/cosign).
+# In CI this relies on the ambient GitHub Actions OIDC token, so the calling
+# workflow must grant `id-token: write` and have cosign installed
+# (sigstore/cosign-installer). For each artifact this emits a Sigstore bundle
+# (.sigstore.json) for offline `cosign verify-blob` verification.
+#
+# After signing, each artifact is verified with `cosign verify-blob` (as the
+# orch-ci action does) so a bad signature fails the release instead of
+# shipping. The verified identity is this repo's release workflow via the
+# GitHub Actions OIDC issuer. Set COSIGN_SKIP_VERIFY=1 to skip verification
+# (e.g. local key-based testing, where there is no Fulcio identity to match).
+#
+# Bundles are named from the full artifact path (slashes/percents encoded) so
+# artifacts that share a basename under different directories cannot
+# overwrite each other's bundle, with a basename-only alias kept for
+# consumers that still expect the plain `<artifact>.sigstore.json` name.
 
 set -euo pipefail
 
-repo="${GITHUB_REPOSITORY:-device-management-toolkit/console}"
+# Keyless verification identity. GITHUB_REPOSITORY is set by GitHub Actions;
+# fall back to the canonical repo for local runs.
+repo="${GITHUB_REPOSITORY:-device-management-toolkit/rpc-go}"
 cert_identity_regexp="^https://github.com/${repo}/.github/workflows/release\\.yml@refs/(heads|tags)/.*$"
 oidc_issuer="https://token.actions.githubusercontent.com"
 
+# The release artifacts produced by build.sh (see .releaserc.json assets).
 artifacts=(
-  console_linux_x64.tar.gz
-  console_linux_x64_headless.tar.gz
-  console_linux_arm64.tar.gz
-  console_linux_arm64_headless.tar.gz
-  dist/windows/console_windows_x64.exe
-  dist/windows/console_windows_x64_headless.exe
-  console_mac_arm64.tar.gz
-  console_mac_arm64_headless.tar.gz
+    rpc_linux_x64.tar.gz
+    rpc_linux_x86.tar.gz
+    rpc_windows_x64.exe
+    rpc_windows_x86.exe
+    rpc_so_x64.tar.gz
 )
 
 compatibility_aliases_enabled=1
 declare -A compatibility_bundle_sources=()
 for artifact in "${artifacts[@]}"; do
-  base_name="$(basename "$artifact")"
-  if [[ -n "${compatibility_bundle_sources[$base_name]:-}" ]]; then
-    printf 'Basename aliases disabled: %s and %s share basename %s; verify path-qualified bundles instead\n' \
-      "${compatibility_bundle_sources[$base_name]}" "$artifact" "$base_name" >&2
-    compatibility_aliases_enabled=0
-  else
-    compatibility_bundle_sources[$base_name]="$artifact"
-  fi
+    base_name="$(basename "$artifact")"
+    if [[ -n "${compatibility_bundle_sources[$base_name]:-}" ]]; then
+        printf 'Basename aliases disabled: %s and %s share basename %s; verify path-qualified bundles instead\n' \
+            "${compatibility_bundle_sources[$base_name]}" "$artifact" "$base_name" >&2
+        compatibility_aliases_enabled=0
+    else
+        compatibility_bundle_sources[$base_name]="$artifact"
+    fi
 done
 
 for artifact in "${artifacts[@]}"; do
-  if [ ! -f "$artifact" ]; then
-    echo "Artifact not found, cannot sign: $artifact"
-    exit 1
-  fi
+    if [ ! -f "$artifact" ]; then
+        echo "❌ Artifact not found, cannot sign: $artifact"
+        exit 1
+    fi
 
-  bundle_name="${artifact//%/%25}"
-  bundle_name="${bundle_name//\//%2F}"
-  bundle_file="${bundle_name}.cosign.bundle.json"
-  compatibility_bundle_file="$(basename "$artifact").cosign.bundle.json"
+    bundle_name="${artifact//%/%25}"
+    bundle_name="${bundle_name//\//%2F}"
+    bundle_file="${bundle_name}.sigstore.json"
+    compatibility_bundle_file="$(basename "$artifact").sigstore.json"
 
-  echo "Signing artifact: $artifact"
+    echo "──────────────────────────────"
+    echo "🔏 Signing binary: $artifact"
+    echo "──────────────────────────────"
 
-  cosign sign-blob \
-    --yes \
-    --bundle "$bundle_file" \
-    "$artifact"
+    cosign sign-blob \
+        --yes \
+        --bundle "$bundle_file" \
+        "$artifact"
 
-  if [[ "$compatibility_aliases_enabled" == 1 && "$bundle_file" != "$compatibility_bundle_file" ]]; then
-    cp "$bundle_file" "$compatibility_bundle_file"
-  fi
+    if [[ "$compatibility_aliases_enabled" == 1 && "$bundle_file" != "$compatibility_bundle_file" ]]; then
+        cp "$bundle_file" "$compatibility_bundle_file"
+    fi
 
-  if [ "${COSIGN_SKIP_VERIFY:-0}" = "1" ]; then
-    echo "Skipping verification for $artifact (COSIGN_SKIP_VERIFY=1)"
-    continue
-  fi
+    echo "✅ Signed $artifact"
 
-  echo "Verifying artifact: $artifact"
-  cosign verify-blob \
-    --bundle "$bundle_file" \
-    --certificate-identity-regexp "$cert_identity_regexp" \
-    --certificate-oidc-issuer "$oidc_issuer" \
-    "$artifact"
+    if [ "${COSIGN_SKIP_VERIFY:-0}" = "1" ]; then
+        echo "⏭️  Skipping verification (COSIGN_SKIP_VERIFY=1) for $artifact"
+        continue
+    fi
+
+    echo "🧾 Verifying $artifact"
+    cosign verify-blob \
+        --bundle "$bundle_file" \
+        --certificate-identity-regexp "$cert_identity_regexp" \
+        --certificate-oidc-issuer "$oidc_issuer" \
+        "$artifact"
+    echo "🟢 Verified $artifact"
 done
 
-echo "Cosign outputs:"
-ls -lh ./*.cosign.bundle.json || true
+echo "Cosign artifacts:"
+ls -lh ./*.sigstore.json || true
